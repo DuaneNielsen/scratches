@@ -15,7 +15,7 @@ pygame.init()
 
 
 profile = pygame.Surface((640, 480))
-image = pygame.Surface((640, 480))
+image = pygame.Surface((400, 400))
 display = pygame.display.set_mode((1280, 760), 0, 32)
 
 pygame.display.set_caption('Camera Transform')
@@ -132,10 +132,15 @@ class View(Transform):
 
 
 class Shape:
-    def __init__(self, color, points):
+    def __init__(self, color, points, pos=None, scale=None):
         self.color = color
         self._points = points
         self.numpy_points = to_numpy(points)
+        if scale:
+            Scale(scale, scale)(self)
+        if pos:
+            Translate(*pos)(self)
+
 
     def points(self):
         return to_points(self.numpy_points)
@@ -174,34 +179,45 @@ class Line:
 
 
 def build_scene():
-    camera = ((0, 0), (30, -20), (30, 20))
-    fov = ((30, -20), (30, 20), (300, 200), (300, -200))
-    # Draw a blue polygon onto the surface
-    # pygame.draw.polygon(windowSurface, BLUE, ((250, 0), (500,200),(250,400), (0,200) ))
     poly = ((125, 100), (375, 100), (375, 300), (125, 300))
     tri = ((125, 100), (375, 100), (375, 300))
-    scene = OrderedDict({"fov": Shape(RED, fov),
-                         "camera": Shape(BLUE, camera),
-                         "poly": Shape(GREEN, poly),
-                         "poly2": Shape(BLUE, poly),
-                         "poly3": Shape(BLUE, poly),
-                         "tri": Shape(BLACK, tri)
+    scene = OrderedDict({#"poly": Shape(BLACK, poly, pos=(90,0), scale=0.25),
+                         #"poly2": Shape(BLUE, poly, pos=(120, 70), scale=0.25),
+                         #"poly3": Shape(BLUE, poly, pos=(250, -80), scale=0.25),
+                         "tri": Shape(BLACK, tri, pos=(30, -80), scale=0.25),
+                         "rear_tri": Shape(BLACK, tri, pos=(-80, -80), scale=0.25)
                          })
-    Scale(0.25, 0.25)(scene["poly"])
-    Translate(90, 0)(scene["poly"])
-    Scale(0.25, 0.25)(scene["poly2"])
-    Translate(120, 70)(scene["poly2"])
-    Scale(0.25, 0.25)(scene["poly3"])
-    Translate(250, -80)(scene["poly3"])
-    Scale(0.25, 0.25)(scene["tri"])
-    Translate(60, -80)(scene["tri"])
+
     return scene
+
+global_translate = Translate(400,200)
+
+def draw_axis():
+    x_axis = Line(BLACK, (-500, 0), (500, 0))
+    y_axis = Line(BLACK, (0, -400), (0, 400))
+    camera = Shape(BLUE, ((0, 0), (30, -20), (30, 20)))
+    fov = Shape(GREEN, ((30, -20), (30, 20), (300, 200), (300, -200)))
+    Reflect()(camera)
+    Reflect()(fov)
+
+    # draw axis
+    global_translate(x_axis)
+    global_translate(y_axis)
+    global_translate(camera)
+    global_translate(fov)
+    x_axis.draw(profile)
+    y_axis.draw(profile)
+    camera.draw(profile)
+    fov.draw(profile)
 
 
 scene = build_scene()
 
-x_axis = Line(BLACK, (-500,0), (500, 0))
-y_axis = Line(BLACK, (0,-400), (0, 400))
+# draw to screen
+profile.fill(WHITE)
+image.fill(WHITE)
+
+draw_axis()
 
 camera_pos = 50, 50
 camera_vector = radians(0.0)
@@ -210,35 +226,24 @@ cam_far = 300 # distance of far fov
 cam_alpha = arctan(200.0/300.0) * 2
 
 cam_camera = Camera(x=50, y=50, theta=0)
-cam_camera.inv(scene["poly"])
-cam_camera.inv(scene["poly2"])
 
 for key, shape in scene.items():
+    cam_camera.inv(shape)
     Reflect()(shape)
 
-image_scene =  OrderedDict({'fov': scene['fov'].copy(),
-                            'poly' : scene['poly'].copy(),
-                            'poly2' : scene['poly2'].copy(),
-                            'poly3' : scene['poly3'].copy(),
-                            'tri': scene['tri'].copy()
-                            })
 
-global_translate = Translate(400,200)
+def copy_scene(scene):
+    scene_copy = {}
+    for key, shape in scene.items():
+        scene_copy[key] = shape.copy()
+    return scene_copy
 
 
-# draw to screen
-profile.fill(WHITE)
+image_scene = copy_scene(scene)
+
 for key, shape in scene.items():
     global_translate(shape)
     shape.draw(profile)
-
-
-# draw axis
-global_translate(x_axis)
-global_translate(y_axis)
-x_axis.draw(profile)
-y_axis.draw(profile)
-
 
 # calculate image space
 cam_view = View(n=cam_near, f=cam_far, alpha=cam_alpha)
@@ -291,8 +296,8 @@ class PointList:
         self.d_s.append(d)
 
     def numpy(self):
-        if len(self.q_s) < 1:
-            print('dead')
+        if len(self.q_s) == 0:
+            return np.empty((2,0)), np.empty((1,0))
         return np.concatenate(self.q_s).reshape(-1, 2).T, np.array(self.d_s)
 
     def __repr__(self):
@@ -321,23 +326,21 @@ def clip(shape):
     d = np.matmul(n, q - p).squeeze()
 
     p_out = np.where(d < 0, 1, 0)
-    if np.any(p_out):
-        if not np.all(p_out): # then we need to clip
-            for clip_plane in range(p.shape[0]):
-                print(f'clipping plane {clip_plane}')
-                t = q - p
-                d = np.matmul(n, t).squeeze()
-                q, d = clip_on_plane(q, d[clip_plane])
 
-            shape.set_shape(q)
-            return True, shape
-        else:
-            print("all points are out")
-            return False, shape
+
+    if np.all(p_out): # then we need to clip
+        return False, shape
     else:
-        print('all points in')
-        return True, shape
+        for clip_plane in range(p.shape[0]):
+            # todo, compute less dot products
+            print(f'clipping plane {clip_plane}')
+            d = np.matmul(n, q - p).squeeze()
+            q, d = clip_on_plane(q, d[clip_plane])
+            if q.shape[1] == 0:
+                return False, shape
 
+        shape.set_shape(q)
+        return True, shape
 
 def clip_on_plane(q, d):
     in_p = PointList()
@@ -397,7 +400,7 @@ pixArray[480][380] = BLACK
 del pixArray
 
 display.blit(profile, (0,0))
-display.blit(image, (640,0))
+display.blit(image, (670,50))
 
 # Draw the window onto the screen
 pygame.display.update()
