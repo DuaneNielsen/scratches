@@ -1,5 +1,5 @@
 import pygame, sys
-from pygame.locals import *
+from pygame.locals import QUIT
 import numpy as np
 from math import radians, degrees
 from numpy import cos, sin, tan, arctan
@@ -7,18 +7,8 @@ from numpy.linalg import inv
 from collections import OrderedDict
 import os
 os.environ['SDL_AUDIODRIVER'] = 'dsp'
+import math
 
-# Set up pygame
-pygame.init()
-
-# Set up the window
-
-
-profile = pygame.Surface((640, 480))
-image = pygame.Surface((400, 400))
-display = pygame.display.set_mode((1280, 760), 0, 32)
-
-pygame.display.set_caption('Camera Transform')
 
 # Set up the colors
 BLACK = (0, 0, 0)
@@ -26,9 +16,10 @@ RED = (255, 0, 0)
 GREEN = (0, 255, 0)
 BLUE = (0, 0, 255)
 WHITE = (255, 255, 255)
-
-# Set up fonts
-basicFont = pygame.font.SysFont(None, 48)
+PINK = (255, 51, 255)
+MAGENTA = (153, 51, 255)
+ORANGE = (255, 128, 0)
+YELLOW = (255, 255, 51)
 
 
 def to_points(array):
@@ -44,7 +35,6 @@ def to_numpy(POINTS):
     h = np.ones((1, len(POINTS)))
     x = np.concatenate((x, h))
     return x
-
 
 def transform(t, POINTS):
     x = to_numpy(POINTS)
@@ -161,6 +151,35 @@ class Shape:
     def __len__(self):
         return self.numpy_points.shape[1]
 
+    def lines(self, homogenous=False):
+        return LineIter(self, homogenous)
+
+
+class LineIter:
+    def __init__(self, shape, homogenous=False):
+        self.shape = shape
+        self.i = 0
+        self.len = len(shape)
+        if homogenous:
+            self.points = self.shape.numpy_points
+        else:
+            p = self.shape.numpy_points[0:2]
+            h = self.shape.numpy_points[2]
+            self.points = p / h
+
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.i == self.len:
+            raise StopIteration
+        q1 = self.points[:, self.i]
+        q2 = self.points[:, (self.i + 1) % self.len]
+        self.i += 1
+        return  q1, q2
+
+
 
 class Line:
     def __init__(self, color, start, end):
@@ -181,11 +200,11 @@ class Line:
 def build_scene():
     poly = ((125, 100), (375, 100), (375, 300), (125, 300))
     tri = ((125, 100), (375, 100), (375, 300))
-    scene = OrderedDict({#"poly": Shape(BLACK, poly, pos=(90,0), scale=0.25),
-                         #"poly2": Shape(BLUE, poly, pos=(120, 70), scale=0.25),
-                         #"poly3": Shape(BLUE, poly, pos=(250, -80), scale=0.25),
-                         "tri": Shape(BLACK, tri, pos=(30, -80), scale=0.25),
-                         "rear_tri": Shape(BLACK, tri, pos=(-80, -80), scale=0.25)
+    scene = OrderedDict({"poly": Shape(RED, poly, pos=(90,0), scale=0.25),
+                         "poly2": Shape(MAGENTA, poly, pos=(120, 70), scale=0.25),
+                         "poly3": Shape(ORANGE, poly, pos=(250, -80), scale=0.25),
+                         "tri": Shape(YELLOW, tri, pos=(80, -80), scale=0.25),
+                         "rear_tri": Shape(BLUE, tri, pos=(-80, -80), scale=0.25)
                          })
 
     return scene
@@ -209,44 +228,6 @@ def draw_axis():
     y_axis.draw(profile)
     camera.draw(profile)
     fov.draw(profile)
-
-
-scene = build_scene()
-
-# draw to screen
-profile.fill(WHITE)
-image.fill(WHITE)
-
-draw_axis()
-
-camera_pos = 50, 50
-camera_vector = radians(0.0)
-cam_near = 30 # distance of near fov
-cam_far = 300 # distance of far fov
-cam_alpha = arctan(200.0/300.0) * 2
-
-cam_camera = Camera(x=50, y=50, theta=0)
-
-for key, shape in scene.items():
-    cam_camera.inv(shape)
-    Reflect()(shape)
-
-
-def copy_scene(scene):
-    scene_copy = {}
-    for key, shape in scene.items():
-        scene_copy[key] = shape.copy()
-    return scene_copy
-
-
-image_scene = copy_scene(scene)
-
-for key, shape in scene.items():
-    global_translate(shape)
-    shape.draw(profile)
-
-# calculate image space
-cam_view = View(n=cam_near, f=cam_far, alpha=cam_alpha)
 
 
 def i_point(q1, q2, d1, d2):
@@ -333,7 +314,6 @@ def clip(shape):
     else:
         for clip_plane in range(p.shape[0]):
             # todo, compute less dot products
-            print(f'clipping plane {clip_plane}')
             d = np.matmul(n, q - p).squeeze()
             q, d = clip_on_plane(q, d[clip_plane])
             if q.shape[1] == 0:
@@ -347,12 +327,9 @@ def clip_on_plane(q, d):
     out_p = PointList()
     poly_size = q.shape[1]
     for i in range(poly_size):
-        print(f"clipping point {i}")
-
         q1 = q[:, i]
         d1 = d[i]
         next_index = (i + 1) % poly_size
-        print(i, next_index)
         q2 = q[:, next_index]
         d2 = d[next_index]
 
@@ -369,38 +346,120 @@ def clip_on_plane(q, d):
                 out_p.append(i_pnt)
                 in_p.append(i_pnt)
 
-    #return np.concatenate(in_p).reshape(-1, 2).T
-    print(in_p)
     return in_p.numpy()
 
 
-def update_image_space():
-    global key, shape
+def update_image_space(image_scene, cam_view):
+    clipped_image_space = {}
     for key, shape in image_scene.items():
-        print(key)
         cam_view(shape)
-        shape_is_in = True
         shape_is_in, shape = clip(shape)
         if shape_is_in:
-            Scale(400 / 2, 400 / 2)(shape)
-            Translate(400 / 2, 400 / 2)(shape)
-            shape.draw(image)
+            clipped_image_space[key] = shape.copy()
+    return clipped_image_space
+
+def draw_clipped_image_space(scene):
+    draw_scene = copy_scene(scene)
+    for key, shape in draw_scene.items():
+        Scale(400 / 2, 400 / 2)(shape)
+        Translate(400 / 2, 400 / 2)(shape)
+        shape.draw(image)
+
+def copy_scene(scene):
+    scene_copy = {}
+    for key, shape in scene.items():
+        scene_copy[key] = shape.copy()
+    return scene_copy
 
 
-#fov = scene['fov'].copy()
-#print(i_poly)
-update_image_space()
+# Set up pygame
+pygame.init()
+basicFont = pygame.font.SysFont(None, 48)
+pygame.display.set_caption('Camera Transform')
+
+# Set up the window
+profile = pygame.Surface((640, 480))
+image = pygame.Surface((400, 400))
+picture = pygame.Surface((50, 400))
+display = pygame.display.set_mode((1280, 760), 0, 32)
+
+scene = build_scene()
+
+# draw to screen
+profile.fill(WHITE)
+image.fill(WHITE)
+picture.fill(WHITE)
+
+draw_axis()
+
+camera_pos = 50, 50
+camera_vector = radians(0.0)
+cam_near = 30 # distance of near fov
+cam_far = 300 # distance of far fov
+cam_alpha = arctan(200.0/300.0) * 2
+
+cam_camera = Camera(x=50, y=50, theta=0)
+
+for key, shape in scene.items():
+    cam_camera.inv(shape)
+    Reflect()(shape)
+
+image_scene = copy_scene(scene)
+
+for key, shape in scene.items():
+    global_translate(shape)
+    shape.draw(profile)
+
+# calculate image space
+cam_view = View(n=cam_near, f=cam_far, alpha=cam_alpha)
+
+clipped_image_space = update_image_space(image_scene, cam_view)
+
+draw_clipped_image_space(clipped_image_space)
+
+resolution = 100
+
+def order_points(q1, q2):
+    if q1[1] > q2[1]:
+        return q1, q2
+    else:
+        return q2, q1
 
 
+def project(clipped_image_space):
+    dbuffer = np.ones(resolution) * -10.0
+    sbuffer = np.zeros((3, resolution))
 
+    for key, shape in clipped_image_space.items():
+        for q1, q2 in shape.lines():
+            top, bottom = order_points(q1, q2)
+            h = math.floor(np.absolute(top[1] - bottom[1]) * resolution // 2)
+            z = np.linspace(top[0], bottom[0], h)
 
-# Get a pixel array of the surface
-pixArray = pygame.PixelArray(profile)
-pixArray[480][380] = BLACK
-del pixArray
+            offset = math.floor((top[1] - 1.0) * -resolution // 2)
+            slice = np.arange(offset, offset + h)
+
+            index = np.where(z > dbuffer[slice])[0]
+            index = index + offset
+
+            sbuffer[:, index] = np.expand_dims(shape.color, axis=1)
+
+            dbuffer[slice] = np.maximum(z, dbuffer[slice])
+
+    return sbuffer
+
+sbuffer = project(clipped_image_space)
+
+def draw_sbuffer(sbuffer):
+    for i in range(sbuffer.shape[1]):
+        pixel = Shape(sbuffer[:,i], ((0,0), (50, 0), (50, 4), (0, 4)), pos=(0, 396 - (i * 4)) )
+        pixel.draw(picture)
+
+draw_sbuffer(sbuffer)
 
 display.blit(profile, (0,0))
 display.blit(image, (670,50))
+display.blit(picture,(1100, 50))
 
 # Draw the window onto the screen
 pygame.display.update()
